@@ -308,7 +308,19 @@ candidate size rather than as a blocked generation.
   This is also a **global** switch and affects other plugins too. The alternative
   is to accept independent auto-updates deliberately; the two checkouts are not
   updated atomically.
-- Install the known generator build, skipping if that version is already present:
+- Check what generator build is already installed before touching it:
+
+  ```bash
+  npm list -g ima2-gen --depth=0
+  ```
+
+  If `ima2-gen@3.16.0` is already there, skip the install and go straight to
+  `ima2 doctor --installation`. If a *different* version is installed, stop: that
+  is a shared global installation, possibly used by other tooling. Preserve it, and
+  decide deliberately whether to move it to 3.16.0 or to keep it and use a
+  separate Node/npm prefix for this runtime. Do not run the global install over it
+  and do not replace it silently.
+- Install the known generator build only when it is missing:
 
   ```bash
   npm install -g ima2-gen@3.16.0
@@ -316,8 +328,9 @@ candidate size rather than as a blocked generation.
   ```
 
   `ima2 doctor --installation` checks the package and native bindings offline.
-  If it reports permission failures, fix them with a normal user-writable Node/npm
-  setup. Do not use `sudo`, do not `@latest`, and do not copy Windows native
+  `@latest` is not an equivalent guarantee: the supported version is exactly
+  3.16.0. If `ima2 doctor` reports permission failures, fix them with a normal
+  user-writable Node/npm setup. Do not use `sudo`, and do not copy Windows native
   modules between machines.
 - Run `ima2 setup`, choose GPT OAuth, and complete the local interactive login and
   provider approvals yourself. Never transfer tokens or `.ima2/server.json`
