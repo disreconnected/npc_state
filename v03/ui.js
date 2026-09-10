@@ -1,4 +1,4 @@
-import { castRailHtml, dossierHtml, filterDossierNpcs } from './dossier-view.js';
+import { castRailHtml, dossierHtml, filterDossierNpcs, portraitSource } from './dossier-view.js';
 import { findNpcByReference, normalizeDossierLimits } from './schema.js';
 
 const SETTINGS_ID = 'npc_state_settings';
@@ -426,7 +426,7 @@ export function createNpcStateUi(adapters = {}) {
         const holder = document.createElement('section');
         holder.id = INLINE_ID;
         holder.className = 'npc-state-present-roster npc-state-v3-inline';
-        holder.innerHTML = `<div class="npc-state-present-roster-head"><span class="npc-state-kicker">PRESENT NPCS</span><small>${present.length} shown</small></div><div class="npc-state-present-grid">${present.map(npc => `<button type="button" class="npc-state-present-card npc-state-v3-inline-card" data-npc-id="${escapeHtml(npc.id)}"><span class="npc-state-present-card-portrait">${npc.portrait?.dataUrl ? `<img src="${escapeHtml(npc.portrait.dataUrl)}" alt="">` : `<div class="npc-state-present-card-placeholder">${escapeHtml(String(npc.name || '?').charAt(0))}</div>`}</span><span class="npc-state-present-card-overlay"><b>${escapeHtml(npc.name)}</b><small>${escapeHtml(presentNpcAgeLabel(npc))}</small></span></button>`).join('')}</div>`;
+        holder.innerHTML = `<div class="npc-state-present-roster-head"><span class="npc-state-kicker">PRESENT NPCS</span><small>${present.length} shown</small></div><div class="npc-state-present-grid">${present.map(npc => { const src = portraitSource(npc); return `<button type="button" class="npc-state-present-card npc-state-v3-inline-card" data-npc-id="${escapeHtml(npc.id)}"><span class="npc-state-present-card-portrait">${src ? `<img src="${escapeHtml(src)}" alt="">` : `<div class="npc-state-present-card-placeholder">${escapeHtml(String(npc.name || '?').charAt(0))}</div>`}</span><span class="npc-state-present-card-overlay"><b>${escapeHtml(npc.name)}</b><small>${escapeHtml(presentNpcAgeLabel(npc))}</small></span></button>`; }).join('')}</div>`;
         holder.querySelectorAll('.npc-state-v3-inline-card').forEach(button => button.addEventListener('click', () => openLibrary(button.dataset.npcId)));
         const target = message.querySelector?.('.mes_text') || message;
         target.appendChild(holder);

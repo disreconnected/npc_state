@@ -12,7 +12,7 @@ function text(value, fallback = 'Unknown') {
     return escapeHtml(clean || fallback);
 }
 
-function portraitSource(npc = {}) {
+export function portraitSource(npc = {}) {
     const portrait = npc?.portrait && typeof npc.portrait === 'object' ? npc.portrait : {};
     return String(portrait.dataUrl || portrait.url || portrait.src || '').trim();
 }
@@ -149,6 +149,7 @@ export function dossierHtml(npc) {
           <button class="menu_button npc-state-v3-refresh" data-npc-id="${escapeHtml(npc.id)}"><i class="fa-solid fa-arrows-rotate"></i><span>Refresh</span></button>
           <details class="npc-state-v3-dossier-more"><summary><i class="fa-solid fa-ellipsis"></i><span>More</span></summary><div>
             <button class="menu_button npc-state-v3-generate-image-prompt" data-npc-id="${escapeHtml(npc.id)}"><i class="fa-solid fa-image"></i> Generate image prompt</button>
+            <button type="button" class="menu_button npc-state-v3-generate-portrait" data-npc-id="${escapeHtml(npc.id)}"><i class="fa-solid fa-wand-magic-sparkles"></i> Generate NPC Portrait</button>
             <input id="${escapeHtml(portraitFileId)}" class="npc-state-v3-portrait-file" data-npc-id="${escapeHtml(npc.id)}" type="file" accept="image/*" hidden>
             <label for="${escapeHtml(portraitFileId)}" class="menu_button npc-state-v3-attach-portrait"><i class="fa-solid fa-image-portrait"></i> ${portraitUrl ? 'Change portrait' : 'Attach portrait'}</label>
             ${portraitUrl ? `<button type="button" class="menu_button npc-state-v3-remove-portrait" data-npc-id="${escapeHtml(npc.id)}"><i class="fa-solid fa-xmark"></i> Remove portrait</button>` : ''}

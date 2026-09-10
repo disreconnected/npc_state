@@ -1,7 +1,13 @@
 {
   "private": true,
   "type": "module",
+  "main": "index.mjs",
   "scripts": {
-    "test": "node --test tests/v03-*.test.js"
+    "test": "node --test tests/v03-*.test.js",
+    "test:bridge": "node --test index.test.mjs",
+    "test:portrait": "playwright test --config tests/portrait.playwright.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
   }
 }

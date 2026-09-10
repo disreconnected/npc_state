@@ -1,6 +1,7 @@
 /* NPC State v0.3.2 - clean runtime */
 import { extension_settings, getContext } from '../../../../extensions.js';
 import { extension_prompt_types, extension_prompt_roles, getRequestHeaders } from '../../../../../script.js';
+import { getBase64Async, getImageSizeFromDataURL, saveBase64AsFile } from '../../../../utils.js';
 import { createBundleManagementUi } from './bundle-ui.js';
 import { createNpcStateEngine } from './engine.js';
 import { getChatIdentity } from './identity.js';
@@ -203,6 +204,9 @@ portraitUi = createPortraitPromptUi({
     engine,
     getSettings,
     persistSettings,
+    getChatKey,
+    getHeaders: () => getRequestHeaders(),
+    imageUtils: { getBase64Async, getImageSizeFromDataURL, saveBase64AsFile },
 });
 
 const meguminBlockIntegration = createMeguminBlockIntegration({
@@ -294,6 +298,7 @@ function registerEvents() {
     });
 
     const load = async () => {
+        portraitUi?.invalidateGenerationContext();
         if (activeChatKey && activeChatKey !== 'no-chat') engine.invalidate(activeChatKey);
         await hydrateActiveChat({ reconcile: true });
     };

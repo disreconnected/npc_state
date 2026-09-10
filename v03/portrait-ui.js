@@ -8,6 +8,8 @@ import {
     normalizePortraitPromptSettings,
     portraitPromptSettingsForPreset,
 } from './portrait-prompt.js';
+import { compressPortrait } from './portrait-attachment.js';
+import { portraitSource } from './dossier-view.js';
 import { findNpcByReference } from './schema.js';
 
 const SECTION_ID = 'npc_state_v3_portrait_prompt';
@@ -65,7 +67,7 @@ function sectionHtml() {
     return `<details id="${SECTION_ID}" class="npc-state-v3-portrait-settings">
       <summary><b>Portrait prompt</b></summary>
       <div class="npc-state-v3-portrait-settings-body">
-        <div class="npc-state-v3-portrait-intro">Prompt composition only. Presets are named reusable positive/negative pairs. NPC State does not call an image API or generate portraits automatically.</div>
+        <div class="npc-state-v3-portrait-intro">Prompt composition only. Presets are named reusable positive/negative pairs. Generating an actual portrait is a separate action: use Generate NPC Portrait in a dossier's More menu, which calls the local Ima2 runtime.</div>
 
         <div class="npc-state-v3-portrait-control-grid">
           <label class="npc-state-v3-portrait-control-row">
@@ -147,26 +149,73 @@ function promptOptionsHtml(library, selectedId) {
     return library.portraitPresets.map(preset => `<option value="${escapeHtml(preset.id)}" ${preset.id === selectedId ? 'selected' : ''}>${escapeHtml(preset.name)}${preset.id === library.portraitActivePresetId ? ' · default' : ''}</option>`).join('');
 }
 
-function promptOverlayHtml(npc, library) {
-    return `<div class="npc-state-v3-prompt-shell" role="dialog" aria-modal="true" aria-label="Generate image prompt" data-npc-id="${escapeHtml(npc.id)}" tabindex="-1">
+function promptOverlayHtml(npc, library, { generate = false } = {}) {
+    const title = generate ? 'Generate NPC Portrait' : 'Generate image prompt';
+    const kicker = generate ? 'GENERATE NPC PORTRAIT' : 'GENERATE IMAGE PROMPT';
+    const subtitle = generate
+        ? 'Ima2 · Sol · High quality · Max reasoning · 2160 × 3840 · PNG · Filter: Low (relaxed)'
+        : 'Compose from the saved dossier. No image provider is called.';
+    const readonly = generate ? '' : ' readonly';
+    const presetRow = `<label class="npc-state-v3-prompt-preset-row">
+        ${fieldHead('Preset', 'Choose any saved positive/negative preset for this NPC. This does not change the default preset.')}
+        <select id="npc_state_v3_prompt_preset" class="text_pole">${promptOptionsHtml(library, library.portraitActivePresetId)}</select>
+      </label>`;
+    const copyButtons = `
+        <button type="button" class="menu_button npc-state-v3-prompt-copy-positive"><i class="fa-solid fa-copy"></i> Copy positive</button>
+        <button type="button" class="menu_button npc-state-v3-prompt-copy-negative"><i class="fa-solid fa-copy"></i> Copy negative</button>
+        <button type="button" class="menu_button npc-state-v3-prompt-copy-both"><i class="fa-solid fa-copy"></i> Copy both</button>`;
+    const negativeNote = generate
+        ? '<small class="npc-state-v3-prompt-negative-note">Ima2 has no separate negative channel; this text is appended to the prompt as NEGATIVE.</small>'
+        : '';
+    const body = generate
+        ? `<div class="npc-state-v3-prompt-columns">
+        <section class="npc-state-v3-prompt-review" aria-label="Portrait review">
+          <div class="npc-state-v3-prompt-current">
+            <span class="npc-state-v3-portrait-field-head"><b>Current attached portrait</b></span>
+            <div class="npc-state-v3-prompt-current-thumb"><img id="npc_state_v3_prompt_current_image" alt="Current attached portrait"></div>
+            <div class="npc-state-v3-prompt-current-empty" id="npc_state_v3_prompt_current_empty">No portrait attached</div>
+          </div>
+          <div class="npc-state-v3-prompt-reference-note" id="npc_state_v3_prompt_reference_note"></div>
+          <div class="npc-state-v3-prompt-main">
+            <img id="npc_state_v3_prompt_main_image" alt="Selected candidate portrait">
+            <div class="npc-state-v3-prompt-main-empty" id="npc_state_v3_prompt_main_empty">Generate a preview to compare portraits.</div>
+          </div>
+          <div class="npc-state-v3-prompt-main-caption" id="npc_state_v3_prompt_main_caption" aria-live="polite"></div>
+          <div class="npc-state-v3-prompt-strip" id="npc_state_v3_prompt_strip" aria-label="Generated candidates"></div>
+        </section>
+        <div class="npc-state-v3-prompt-editor">
+          ${presetRow}
+          <div class="npc-state-v3-prompt-generation-pair">
+            <label><span class="npc-state-v3-portrait-field-head"><b>Positive prompt</b></span><textarea id="npc_state_v3_prompt_positive" class="text_pole" rows="8"></textarea></label>
+            <label><span class="npc-state-v3-portrait-field-head"><b>Negative prompt</b></span>${negativeNote}<textarea id="npc_state_v3_prompt_negative" class="text_pole" rows="8"></textarea></label>
+          </div>
+          <small class="npc-state-v3-prompt-edit-note">Prompt edits affect the next generation, not the selected image.</small>
+        </div>
+      </div>`
+        : `${presetRow}
+        <div class="npc-state-v3-prompt-reference-note" id="npc_state_v3_prompt_reference_note"></div>
+        <div class="npc-state-v3-prompt-preview-pair">
+          <label><span class="npc-state-v3-portrait-field-head"><b>Positive prompt</b></span><textarea id="npc_state_v3_prompt_positive" class="text_pole" rows="16"${readonly}></textarea></label>
+          <label><span class="npc-state-v3-portrait-field-head"><b>Negative prompt</b></span>${negativeNote}<textarea id="npc_state_v3_prompt_negative" class="text_pole" rows="16"${readonly}></textarea></label>
+        </div>`;
+    const footer = generate
+        ? `<div class="npc-state-v3-prompt-action-row">
+        <button type="button" class="menu_button npc-state-v3-prompt-generate"><i class="fa-solid fa-wand-magic-sparkles"></i> <span class="npc-state-v3-prompt-generate-label">Generate preview</span></button>
+        <button type="button" class="menu_button npc-state-v3-prompt-apply"><i class="fa-solid fa-image-portrait"></i> <span class="npc-state-v3-prompt-apply-label">Use this portrait</span></button>
+      </div>
+      <div class="npc-state-v3-prompt-copy-row">${copyButtons}</div>
+      <span id="npc_state_v3_prompt_status" class="npc-state-v3-prompt-status" role="status" aria-live="polite"></span>`
+        : `<div class="npc-state-v3-prompt-copy-row">${copyButtons}</div>`;
+    return `<div class="npc-state-v3-prompt-shell" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}" data-npc-id="${escapeHtml(npc.id)}" data-generate="${generate ? 'true' : 'false'}" tabindex="-1">
       <header class="npc-state-v3-prompt-header">
-        <div><span class="npc-state-kicker">GENERATE IMAGE PROMPT</span><h2>${escapeHtml(npc.name)}</h2><small>Compose from the saved dossier. No image provider is called.</small></div>
+        <div><span class="npc-state-kicker">${kicker}</span><h2>${escapeHtml(npc.name)}</h2><small>${escapeHtml(subtitle)}</small></div>
         <button type="button" class="npc-state-v3-prompt-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
       </header>
       <div class="npc-state-v3-prompt-body">
-        <label class="npc-state-v3-prompt-preset-row">
-          ${fieldHead('Preset', 'Choose any saved positive/negative preset for this NPC. This does not change the default preset.')}
-          <select id="npc_state_v3_prompt_preset" class="text_pole">${promptOptionsHtml(library, library.portraitActivePresetId)}</select>
-        </label>
-        <div class="npc-state-v3-prompt-preview-pair">
-          <label><span class="npc-state-v3-portrait-field-head"><b>Positive prompt</b></span><textarea id="npc_state_v3_prompt_positive" class="text_pole" rows="16" readonly></textarea></label>
-          <label><span class="npc-state-v3-portrait-field-head"><b>Negative prompt</b></span><textarea id="npc_state_v3_prompt_negative" class="text_pole" rows="16" readonly></textarea></label>
-        </div>
+        ${body}
       </div>
       <footer class="npc-state-v3-prompt-actions">
-        <button type="button" class="menu_button npc-state-v3-prompt-copy-positive"><i class="fa-solid fa-copy"></i> Copy positive</button>
-        <button type="button" class="menu_button npc-state-v3-prompt-copy-negative"><i class="fa-solid fa-copy"></i> Copy negative</button>
-        <button type="button" class="menu_button npc-state-v3-prompt-copy-both"><i class="fa-solid fa-copy"></i> Copy both</button>
+        ${footer}
       </footer>
     </div>`;
 }
@@ -175,10 +224,16 @@ export function createPortraitPromptUi(adapters = {}) {
     const engine = adapters.engine;
     const getSettings = adapters.getSettings;
     const persistSettings = adapters.persistSettings || (() => {});
+    const getChatKey = adapters.getChatKey || (() => '');
+    const getHeaders = adapters.getHeaders || (() => ({}));
+    const imageUtils = adapters.imageUtils || {};
     let dirty = false;
     let draft = null;
     let mountTimer = null;
     let dossierBridgeBound = false;
+    let promptFocusBeforeOpen = null;
+    const pendingGenerations = new Map();
+    const generationSessions = new Map();
 
     function notify(kind, message) {
         const fn = globalThis.toastr?.[kind];
@@ -459,61 +514,687 @@ export function createPortraitPromptUi(adapters = {}) {
         root.querySelector('#npc_state_v3_portrait_copy_both')?.addEventListener('click', () => copyChannel('both', root).catch(error => notify('error', error.message)));
     }
 
-    function renderPromptOverlay(root = promptOverlay()) {
+    function pendingKey(chatKey, npcId) {
+        return `${String(chatKey)}\u0000${String(npcId)}`;
+    }
+
+    function pendingFor(chatKey, npcId) {
+        return pendingGenerations.get(pendingKey(chatKey, npcId)) || null;
+    }
+
+    function readPromptValue(channel, root = promptOverlay()) {
+        const element = root?.querySelector(`#npc_state_v3_prompt_${channel}`);
+        return String(element?.value ?? '');
+    }
+
+    function combinedPromptValue(root = promptOverlay()) {
+        return `POSITIVE\n${readPromptValue('positive', root)}\n\nNEGATIVE\n${readPromptValue('negative', root)}`.trim();
+    }
+
+    function composePromptOverlay(root = promptOverlay()) {
         const shell = root?.querySelector('.npc-state-v3-prompt-shell');
         const npc = shell ? findNpcByReference(state(), shell.dataset.npcId || '') : null;
-        const select = root?.querySelector('#npc_state_v3_prompt_preset');
-        const presetId = select?.value || '';
-        const selectedSettings = portraitPromptSettingsForPreset(getSettings(), presetId);
-        const values = npc ? buildPortraitPrompts(npc, selectedSettings) : { positive: '', negative: '', combined: '' };
+        const presetId = root?.querySelector('#npc_state_v3_prompt_preset')?.value || '';
+        const values = npc ? buildPortraitPrompts(npc, portraitPromptSettingsForPreset(getSettings(), presetId)) : { positive: '', negative: '', combined: '' };
         const positive = root?.querySelector('#npc_state_v3_prompt_positive');
         const negative = root?.querySelector('#npc_state_v3_prompt_negative');
         if (positive) positive.value = values.positive;
         if (negative) negative.value = values.negative;
-        root?.querySelector('.npc-state-v3-prompt-copy-positive')?.toggleAttribute('disabled', !values.positive);
-        root?.querySelector('.npc-state-v3-prompt-copy-negative')?.toggleAttribute('disabled', !values.negative);
-        root?.querySelector('.npc-state-v3-prompt-copy-both')?.toggleAttribute('disabled', !values.positive && !values.negative);
+        if (shell) {
+            shell.dataset.initialPositive = values.positive;
+            shell.dataset.initialNegative = values.negative;
+        }
+        return values;
+    }
+
+    function sessionKeyForShell(root = promptOverlay()) {
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        if (!shell) return null;
+        const chatKey = String(shell.dataset.chatKey || '');
+        const npcId = String(shell.dataset.npcId || '');
+        return chatKey && npcId ? pendingKey(chatKey, npcId) : null;
+    }
+
+    function sessionForShell(root = promptOverlay()) {
+        const key = sessionKeyForShell(root);
+        return key ? generationSessions.get(key) || null : null;
+    }
+
+    function composeGenerationPrompt(root = promptOverlay(), session = sessionForShell(root)) {
+        if (!session) return null;
+        const values = buildPairFor(session.npcId, session.presetId);
+        session.positive = values.positive;
+        session.negative = values.negative;
+        session.initialPositive = values.positive;
+        session.initialNegative = values.negative;
+        return values;
+    }
+
+    function generationPromptEdited(root = promptOverlay()) {
+        const session = sessionForShell(root);
+        if (!session) return false;
+        return readPromptValue('positive', root) !== session.initialPositive
+            || readPromptValue('negative', root) !== session.initialNegative;
+    }
+
+    function updateReferenceNote(root = promptOverlay()) {
+        const note = root?.querySelector('#npc_state_v3_prompt_reference_note');
+        if (!note) return;
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        const npc = shell ? findNpcByReference(state(), shell.dataset.npcId || '') : null;
+        note.textContent = portraitSource(npc || {})
+            ? 'The current NPC portrait will be sent as the image reference.'
+            : 'No portrait attached: generation will be text-only.';
+    }
+
+    /**
+     * Renders the review/editor state of the generation dialog, scoped to the
+     * chat and NPC captured on its shell. The candidate strip, thumbnails,
+     * selection, prompt fields, attached-portrait note and action states all
+     * read from the generation session rather than transient DOM state.
+     */
+    function renderGenerationView(root = promptOverlay()) {
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        if (!shell || shell.dataset.generate !== 'true') return;
+        const key = sessionKeyForShell(root);
+        if (!key) return;
+        const record = pendingGenerations.get(key) || null;
+        const session = generationSessions.get(key) || null;
+        const busy = Boolean(record);
+        const npc = liveNpcById(String(shell.dataset.npcId || ''));
+        const attached = portraitSource(npc || {});
+        const currentImage = root.querySelector('#npc_state_v3_prompt_current_image');
+        const currentEmpty = root.querySelector('#npc_state_v3_prompt_current_empty');
+        if (currentImage) {
+            currentImage.src = attached || '';
+            currentImage.hidden = !attached;
+        }
+        if (currentEmpty) currentEmpty.hidden = Boolean(attached);
+        const note = root.querySelector('#npc_state_v3_prompt_reference_note');
+        if (note) {
+            note.textContent = attached
+                ? 'The current attached portrait will be sent as the image reference.'
+                : 'No portrait attached: the next generation is text-only.';
+        }
+        const candidates = session?.candidates || [];
+        const selected = candidates.find(candidate => candidate.id === session?.selectedCandidateId) || null;
+        const mainImage = root.querySelector('#npc_state_v3_prompt_main_image');
+        const mainEmpty = root.querySelector('#npc_state_v3_prompt_main_empty');
+        const caption = root.querySelector('#npc_state_v3_prompt_main_caption');
+        if (selected) {
+            if (mainImage) { mainImage.src = selected.previewUrl; mainImage.hidden = false; }
+            if (mainEmpty) mainEmpty.hidden = true;
+            if (caption) caption.textContent = `Candidate ${candidates.indexOf(selected) + 1} · ${selected.width} × ${selected.height}`;
+        } else {
+            if (mainImage) { mainImage.removeAttribute('src'); mainImage.hidden = true; }
+            if (mainEmpty) mainEmpty.hidden = false;
+            if (caption) caption.textContent = '';
+        }
+        const strip = root.querySelector('#npc_state_v3_prompt_strip');
+        if (strip) {
+            strip.replaceChildren();
+            candidates.forEach((candidate, index) => {
+                const button = globalThis.document.createElement('button');
+                button.type = 'button';
+                button.className = 'npc-state-v3-prompt-strip-button';
+                button.setAttribute('aria-pressed', String(candidate.id === selected?.id));
+                button.setAttribute('aria-label', `Preview candidate ${index + 1}`);
+                button.disabled = record?.phase === 'applying';
+                const image = globalThis.document.createElement('img');
+                image.src = candidate.previewUrl;
+                image.alt = '';
+                button.appendChild(image);
+                button.addEventListener('click', () => {
+                    const currentSession = generationSessions.get(key);
+                    if (!currentSession || currentSession.invalidated || currentSession !== session) return;
+                    currentSession.selectedCandidateId = candidate.id;
+                    renderGenerationView(root);
+                });
+                strip.appendChild(button);
+            });
+        }
+        const positiveField = root.querySelector('#npc_state_v3_prompt_positive');
+        const negativeField = root.querySelector('#npc_state_v3_prompt_negative');
+        const presetSelect = root.querySelector('#npc_state_v3_prompt_preset');
+        if (presetSelect) presetSelect.disabled = busy;
+        if (positiveField) positiveField.disabled = busy;
+        if (negativeField) negativeField.disabled = busy;
+        if (session) {
+            if (positiveField) positiveField.value = session.positive;
+            if (negativeField) negativeField.value = session.negative;
+            if (presetSelect) {
+                const library = normalizePortraitPresetLibrary(getSettings());
+                if (!library.portraitPresets.some(preset => preset.id === session.presetId)) {
+                    session.presetId = library.portraitActivePresetId;
+                }
+                presetSelect.value = session.presetId;
+            }
+        }
+        const generateButton = root.querySelector('.npc-state-v3-prompt-generate');
+        const generateLabel = root.querySelector('.npc-state-v3-prompt-generate .npc-state-v3-prompt-generate-label') || generateButton;
+        if (generateButton) generateButton.disabled = busy;
+        if (generateLabel) generateLabel.textContent = candidates.length ? 'Regenerate' : 'Generate preview';
+        const applyButton = root.querySelector('.npc-state-v3-prompt-apply');
+        const applyLabel = root.querySelector('.npc-state-v3-prompt-apply .npc-state-v3-prompt-apply-label') || applyButton;
+        const selectedAttached = Boolean(selected?.savedPath && selected.savedPath === attached);
+        if (applyButton) applyButton.disabled = busy || !selected || selectedAttached;
+        if (applyLabel) applyLabel.textContent = selectedAttached ? 'Current portrait' : 'Use this portrait';
+        root.querySelector('.npc-state-v3-prompt-copy-positive')?.toggleAttribute('disabled', !String(positiveField?.value || '').trim());
+        root.querySelector('.npc-state-v3-prompt-copy-negative')?.toggleAttribute('disabled', !String(negativeField?.value || '').trim());
+        root.querySelector('.npc-state-v3-prompt-copy-both')?.toggleAttribute('disabled', !String(positiveField?.value || '').trim() && !String(negativeField?.value || '').trim());
+        const status = root.querySelector('#npc_state_v3_prompt_status');
+        if (status) status.textContent = record?.statusLabel || (candidates.length ? 'Preview ready. Choose a portrait or edit the prompt to regenerate.' : '');
+    }
+
+    function renderPromptOverlay(root = promptOverlay()) {
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        if (!shell) return { positive: '', negative: '', combined: '' };
+        if (shell.dataset.generate === 'true') {
+            renderGenerationView(root);
+            return { positive: readPromptValue('positive', root), negative: readPromptValue('negative', root), combined: combinedPromptValue(root) };
+        }
+        const npc = findNpcByReference(state(), shell.dataset.npcId || '');
+        const presetId = root?.querySelector('#npc_state_v3_prompt_preset')?.value || '';
+        const values = npc ? buildPortraitPrompts(npc, portraitPromptSettingsForPreset(getSettings(), presetId)) : { positive: '', negative: '', combined: '' };
+        composePromptOverlay(root);
+        root?.querySelector('.npc-state-v3-prompt-copy-positive')?.toggleAttribute('disabled', !readPromptValue('positive', root).trim());
+        root?.querySelector('.npc-state-v3-prompt-copy-negative')?.toggleAttribute('disabled', !readPromptValue('negative', root).trim());
+        root?.querySelector('.npc-state-v3-prompt-copy-both')?.toggleAttribute('disabled', !readPromptValue('positive', root).trim() && !readPromptValue('negative', root).trim());
+        updateReferenceNote(root);
         return values;
     }
 
     async function copyPromptOverlay(channel, root = promptOverlay()) {
-        const values = renderPromptOverlay(root);
-        const value = channel === 'negative' ? values.negative : channel === 'both' ? values.combined : values.positive;
+        const value = channel === 'negative' ? readPromptValue('negative', root).trim() : channel === 'both' ? combinedPromptValue(root) : readPromptValue('positive', root).trim();
         if (!value) return false;
         await copyText(value);
         notify('success', channel === 'both' ? 'positive and negative portrait prompts copied.' : `${channel} portrait prompt copied.`);
         return true;
     }
 
+    function referenceBase64(dataUrl) {
+        return String(dataUrl).slice(String(dataUrl).indexOf(',') + 1);
+    }
+
+    const IMA2_ENDPOINT = '/api/plugins/npc-state-ima2/generate';
+    const IMA2_MAX_REF_CHARS = 7 * 1024 * 1024;
+    const IMA2_MAX_PROMPT_CHARS = 32000;
+
+    function liveNpcById(npcId) {
+        const state = engine.getState?.();
+        return (state?.npcs || []).find(npc => npc?.id === npcId) || null;
+    }
+
+    function clearProgressToast(record) {
+        if (record?.toastHandle && typeof globalThis.toastr?.clear === 'function') {
+            globalThis.toastr.clear(record.toastHandle, { force: true });
+        }
+        if (record) record.toastHandle = null;
+    }
+
+    /**
+     * Resolves the existing portrait into one Ima2 reference data URL.
+     * Data URLs pass through directly; only same-origin /user/images/ files
+     * may be fetched. Oversized references are reduced with compressPortrait
+     * for provider input only. No silent text-only fallback: failures stop
+     * before generation.
+     */
+    async function prepareReference(source) {
+        const reference = String(source || '');
+        let dataUrl = '';
+        let blob = null;
+        if (reference.startsWith('data:')) {
+            dataUrl = reference;
+        } else {
+            let parsed;
+            try { parsed = new URL(reference, globalThis.location?.href); } catch { return { ok: false, error: 'the portrait reference URL is invalid.' }; }
+            if (!globalThis.location?.origin || parsed.origin !== globalThis.location.origin || !parsed.pathname.startsWith('/user/images/')) {
+                return { ok: false, error: 'the portrait reference must be a local SillyTavern image.' };
+            }
+            let response;
+            try { response = await fetch(`${parsed.pathname}${parsed.search}`, { redirect: 'error' }); } catch { return { ok: false, error: 'the portrait reference file could not be read.' }; }
+            if (!response?.ok) return { ok: false, error: 'the portrait reference file could not be read.' };
+            try { blob = await response.blob(); } catch { return { ok: false, error: 'the portrait reference file could not be read.' }; }
+            if (!blob || !String(blob.type || '').startsWith('image/') || /svg/i.test(String(blob.type))) {
+                return { ok: false, error: 'the portrait reference is not a supported PNG, JPEG, or WebP image.' };
+            }
+            try { dataUrl = await imageUtils.getBase64Async(blob); } catch { return { ok: false, error: 'the portrait reference could not be decoded.' }; }
+        }
+        if (!/^data:image\/(?:png|jpeg|jpg|webp);base64,/.test(dataUrl)) {
+            return { ok: false, error: 'the portrait reference is not a supported PNG, JPEG, or WebP image.' };
+        }
+        if (referenceBase64(dataUrl).length <= IMA2_MAX_REF_CHARS) return { ok: true, references: [dataUrl], reduced: false };
+        try {
+            const reduced = await compressPortrait(blob || await (await fetch(dataUrl)).blob());
+            if (!reduced?.dataUrl || referenceBase64(reduced.dataUrl).length > IMA2_MAX_REF_CHARS) throw new Error('still-too-large');
+            return { ok: true, references: [reduced.dataUrl], reduced: true };
+        } catch {
+            return { ok: false, error: 'the portrait reference exceeds the Ima2 size limit and could not be reduced.' };
+        }
+    }
+
+    function generationSessionFor(chatKey, npcId) {
+        const key = pendingKey(chatKey, npcId);
+        const existing = generationSessions.get(key);
+        if (existing) return existing;
+        const library = normalizePortraitPresetLibrary(getSettings());
+        const presetId = library.portraitActivePresetId;
+        const values = buildPairFor(npcId, presetId);
+        const session = {
+            chatKey,
+            npcId,
+            presetId,
+            positive: values.positive,
+            negative: values.negative,
+            initialPositive: values.positive,
+            initialNegative: values.negative,
+            candidates: [],
+            selectedCandidateId: null,
+            invalidated: false,
+        };
+        generationSessions.set(key, session);
+        return session;
+    }
+
+    function destroySessionUrls(session) {
+        for (const candidate of session?.candidates || []) {
+            if (candidate.previewUrl && typeof globalThis.URL?.revokeObjectURL === 'function') {
+                globalThis.URL.revokeObjectURL(candidate.previewUrl);
+            }
+            candidate.previewUrl = null;
+            candidate.blob = null;
+        }
+    }
+
+    function disposeMissingNpcSessions() {
+        for (const [key, session] of [...generationSessions]) {
+            if (pendingGenerations.has(key)) continue;
+            if (!findNpcByReference(state(), session.npcId)) {
+                destroySessionUrls(session);
+                generationSessions.delete(key);
+            }
+        }
+    }
+
+    function operationStillValid(key, record) {
+        if (!record || record.invalidated) return false;
+        const session = record.session;
+        if (!session || session.invalidated || generationSessions.get(key) !== session) return false;
+        if (getChatKey() !== record.chatKey) return false;
+        return Boolean(record.npcId && liveNpcById(record.npcId));
+    }
+
+    function discardGenerationResult() {
+        notify('error', 'Portrait generation was discarded because the chat or NPC changed.');
+        return false;
+    }
+
+    function discardApplicationResult() {
+        notify('error', 'Portrait application was discarded because the chat or NPC changed. The current portrait was preserved.');
+        return false;
+    }
+
+    async function startGeneration(npcId, root = promptOverlay()) {
+        const chatKey = getChatKey();
+        if (!chatKey || chatKey === 'no-chat' || /-pending:/.test(chatKey)) {
+            notify('warning', 'load a chat before generating a portrait.');
+            return false;
+        }
+        const key = pendingKey(chatKey, npcId);
+        if (pendingGenerations.has(key)) {
+            notify('warning', 'a portrait operation is already running for this NPC.');
+            return false;
+        }
+        const npc = liveNpcById(npcId);
+        if (!npc) {
+            notify('error', 'NPC not found in the active dossier.');
+            return false;
+        }
+        const session = generationSessionFor(chatKey, npcId);
+        const positive = String(readPromptValue('positive', root));
+        const negative = String(readPromptValue('negative', root));
+        session.positive = positive;
+        session.negative = negative;
+        session.initialPositive = positive;
+        session.initialNegative = negative;
+        if (!positive.trim()) {
+            notify('error', 'the positive prompt is blank.');
+            return false;
+        }
+        const prompt = `POSITIVE\n${positive}\n\nNEGATIVE\n${negative}`.trim();
+        if (prompt.length > IMA2_MAX_PROMPT_CHARS) {
+            notify('error', `the combined prompt is ${prompt.length} characters; Ima2 accepts at most 32,000.`);
+            return false;
+        }
+        const record = {
+            chatKey,
+            npcId,
+            session,
+            phase: 'generating',
+            statusLabel: 'Generating preview…',
+            toastHandle: null,
+        };
+        pendingGenerations.set(key, record);
+        if (globalThis.toastr?.info) {
+            record.toastHandle = globalThis.toastr.info(`Generating portrait preview for ${npc.name}…`, 'NPC State', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        }
+        syncOpenGenerationDialog(key);
+        try {
+            let references = [];
+            const attachedAtClick = portraitSource(npc);
+            if (attachedAtClick) {
+                const prepared = await prepareReference(attachedAtClick);
+                if (!operationStillValid(key, record)) return discardGenerationResult();
+                if (!prepared.ok) {
+                    notify('error', `portrait generation stopped before submitting: ${prepared.error}`);
+                    return false;
+                }
+                references = prepared.references;
+                if (prepared.reduced) {
+                    record.statusLabel = 'Generating preview… (reference copy reduced to fit Ima2 limits)';
+                    syncOpenGenerationDialog(key);
+                }
+            }
+            if (!operationStillValid(key, record)) return discardGenerationResult();
+            const response = await fetch(IMA2_ENDPOINT, {
+                method: 'POST',
+                headers: { ...getHeaders(), 'content-type': 'application/json' },
+                body: JSON.stringify({ prompt, references }),
+            });
+            if (response.status === 404) {
+                notify('error', 'the Ima2 bridge plugin is not loaded. Install plugins/npc-state-ima2 and restart SillyTavern.');
+                return false;
+            }
+            const data = await response.json().catch(() => null);
+            if (!response?.ok || !data?.image) {
+                const code = ['IMA2_UNAVAILABLE', 'IMA2_GENERATION_FAILED', 'IMA2_INVALID_IMAGE', 'INVALID_PORTRAIT_REQUEST'].includes(data?.code)
+                    ? data.code
+                    : response?.status || 'unknown';
+                notify('error', `portrait generation failed (${code}). The current portrait was preserved; nothing was attached.`);
+                return false;
+            }
+            if (!operationStillValid(key, record)) return discardGenerationResult();
+            let blob = null;
+            let size = null;
+            try {
+                blob = await (await fetch(data.image)).blob();
+                size = await imageUtils.getImageSizeFromDataURL(data.image).catch(() => null);
+            } catch {
+                blob = null;
+            }
+            if (!blob || !size || Number(size.width) !== Number(data.width) || Number(size.height) !== Number(data.height)) {
+                notify('error', 'the generated image could not be previewed. The current portrait was preserved; nothing was attached.');
+                return false;
+            }
+            if (!operationStillValid(key, record)) return discardGenerationResult();
+            const previewUrl = globalThis.URL.createObjectURL(blob);
+            const currentSession = generationSessions.get(key);
+            if (currentSession !== session || session.invalidated) {
+                globalThis.URL.revokeObjectURL(previewUrl);
+                return discardGenerationResult();
+            }
+            const candidate = {
+                id: String(data.requestId || `candidate-${Date.now()}`),
+                blob,
+                previewUrl,
+                width: Number(data.width),
+                height: Number(data.height),
+                savedPath: null,
+            };
+            session.candidates.push(candidate);
+            session.selectedCandidateId = candidate.id;
+            record.statusLabel = 'Preview ready. Choose a portrait or edit the prompt to regenerate.';
+            syncOpenGenerationDialog(key);
+            notify('success', `preview ${session.candidates.length} ready (${candidate.width} × ${candidate.height}). Choose a portrait or edit the prompt to regenerate.`);
+            return true;
+        } catch {
+            notify('error', 'portrait generation could not reach Ima2. The current portrait was preserved.');
+            return false;
+        } finally {
+            releasePending(key, record);
+            syncOpenGenerationDialog(key);
+        }
+    }
+
+    function validUploadedPath(value) {
+        if (typeof value !== 'string' || !value) return false;
+        try {
+            const parsed = new URL(value, globalThis.location?.href);
+            return Boolean(globalThis.location?.origin) && parsed.origin === globalThis.location.origin
+                && parsed.pathname.startsWith('/user/images/npc-state/');
+        } catch {
+            return false;
+        }
+    }
+
+    function applyStillValid(key, record) {
+        if (!operationStillValid(key, record)) return false;
+        const npc = liveNpcById(record.npcId);
+        if (!npc) return false;
+        const currentPortrait = npc.portrait && typeof npc.portrait === 'object' ? npc.portrait : {};
+        if (portraitSource({ portrait: currentPortrait }) !== record.capturedPortraitSource) return false;
+        if ((Number(currentPortrait.updatedAt) || 0) !== record.capturedPortraitUpdatedAt) return false;
+        return (Number(npc.updatedAt) || 0) === record.capturedNpcUpdatedAt;
+    }
+
+    async function applyCandidate(npcId, root = promptOverlay()) {
+        const chatKey = getChatKey();
+        if (!chatKey || chatKey === 'no-chat' || /-pending:/.test(chatKey)) {
+            notify('warning', 'load a chat before applying a portrait.');
+            return false;
+        }
+        const key = pendingKey(chatKey, npcId);
+        if (pendingGenerations.has(key)) {
+            notify('warning', 'a portrait operation is already running for this NPC.');
+            return false;
+        }
+        const npc = liveNpcById(npcId);
+        if (!npc) {
+            notify('error', 'NPC not found in the active dossier.');
+            return false;
+        }
+        const session = generationSessions.get(key) || null;
+        const selected = session?.candidates.find(candidate => candidate.id === session.selectedCandidateId) || null;
+        if (!selected) {
+            notify('warning', 'generate a preview before applying a portrait.');
+            return false;
+        }
+        if (selected.savedPath && selected.savedPath === portraitSource(npc)) {
+            notify('warning', 'this preview is already the attached portrait.');
+            return false;
+        }
+        const capturedPortrait = npc.portrait && typeof npc.portrait === 'object' ? structuredClone(npc.portrait) : null;
+        const capturedPortraitSource = portraitSource({ portrait: capturedPortrait });
+        const capturedPortraitUpdatedAt = Number(capturedPortrait?.updatedAt) || 0;
+        const capturedNpcUpdatedAt = Number(npc.updatedAt) || 0;
+        const record = {
+            chatKey,
+            npcId,
+            session,
+            phase: 'applying',
+            statusLabel: 'Applying portrait…',
+            toastHandle: null,
+            candidate: selected,
+            capturedPortraitSource,
+            capturedPortraitUpdatedAt,
+            capturedNpcUpdatedAt,
+        };
+        pendingGenerations.set(key, record);
+        if (globalThis.toastr?.info) {
+            record.toastHandle = globalThis.toastr.info(`Applying portrait to ${npc.name}…`, 'NPC State', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        }
+        syncOpenGenerationDialog(key);
+        let commitAttempted = false;
+        try {
+            let savedPath = selected.savedPath || '';
+            if (!savedPath) {
+                const base64 = referenceBase64(await imageUtils.getBase64Async(selected.blob));
+                if (!base64) throw new Error('empty-bytes');
+                savedPath = await imageUtils.saveBase64AsFile(base64, 'npc-state', `npc-${crypto.randomUUID()}`, 'png');
+            }
+            if (!applyStillValid(key, record)) return discardApplicationResult();
+            if (!validUploadedPath(savedPath)) {
+                selected.savedPath = null;
+                throw new Error('upload-path');
+            }
+            const savedSize = await imageUtils.getImageSizeFromDataURL(savedPath).catch(() => null);
+            if (!savedSize || Number(savedSize.width) !== Number(selected.width) || Number(savedSize.height) !== Number(selected.height)) {
+                selected.savedPath = null;
+                throw new Error('upload-verify');
+            }
+            selected.savedPath = savedPath;
+            if (!applyStillValid(key, record)) return discardApplicationResult();
+            const portrait = {
+                url: selected.savedPath,
+                mime: 'image/png',
+                sourceName: selected.savedPath.split('/').pop() || 'portrait.png',
+                width: Number(selected.width),
+                height: Number(selected.height),
+                updatedAt: Date.now(),
+            };
+            commitAttempted = true;
+            const update = await engine.updateNpc(npcId, { portrait }, { expectedUpdatedAt: record.capturedNpcUpdatedAt, expectedChatKey: chatKey });
+            if (!update?.ok) {
+                notify('error', 'the portrait was not applied because the dossier changed. The current portrait was preserved; the candidate is still available.');
+                return false;
+            }
+            syncOpenGenerationDialog(key);
+            notify('success', `portrait applied (${portrait.width} × ${portrait.height}).`);
+            return true;
+        } catch {
+            if (commitAttempted) {
+                notify('error', 'Could not confirm that the portrait was applied. Candidate kept; reopen the dossier to check before retrying.');
+                if (selected.savedPath) showSavedLink(selected.savedPath);
+            } else {
+                notify('error', 'the portrait could not be uploaded or verified. The current portrait was preserved; the candidate is still available.');
+            }
+            return false;
+        } finally {
+            releasePending(key, record);
+            syncOpenGenerationDialog(key);
+        }
+    }
+
+    function showSavedLink(path) {
+        if (globalThis.toastr?.info) {
+            globalThis.toastr.info(`Uploaded copy: <a href="${escapeHtml(path)}" target="_blank" rel="noopener">${escapeHtml(path)}</a>`, 'NPC State', { escapeHtml: false, timeOut: 15000, closeButton: true });
+        }
+    }
+
+    function invalidateGenerationContext() {
+        for (const record of pendingGenerations.values()) record.invalidated = true;
+        for (const session of generationSessions.values()) {
+            session.invalidated = true;
+            destroySessionUrls(session);
+        }
+        generationSessions.clear();
+        const root = promptOverlay();
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        if (shell?.dataset?.generate === 'true') closePrompt();
+    }
+
     function closePrompt() {
         promptOverlay()?.remove();
         globalThis.document?.documentElement?.classList.remove('npc-state-v3-prompt-open');
         globalThis.document?.body?.classList.remove('npc-state-v3-prompt-open');
+        if (promptFocusBeforeOpen && promptFocusBeforeOpen.isConnected === true) {
+            try { promptFocusBeforeOpen.focus?.({ preventScroll: true }); } catch { promptFocusBeforeOpen.focus?.(); }
+        }
+        promptFocusBeforeOpen = null;
     }
 
-    function openFor(reference) {
+    function releasePending(key, record) {
+        clearProgressToast(record);
+        if (pendingGenerations.get(key) === record) pendingGenerations.delete(key);
+    }
+
+    function syncOpenGenerationDialog(key) {
+        const root = promptOverlay();
+        const shell = root?.querySelector('.npc-state-v3-prompt-shell');
+        if (shell?.dataset?.generate !== 'true') return;
+        if (sessionKeyForShell(root) !== key) return;
+        renderGenerationView(root);
+    }
+
+    function openFor(reference, { generate = false } = {}) {
         const npc = findNpcByReference(state(), reference);
         if (!npc || !globalThis.document?.body) return false;
         ensureStyleSheet();
+        disposeMissingNpcSessions();
         closePrompt();
         const library = normalizePortraitPresetLibrary(getSettings());
         const overlay = globalThis.document.createElement('div');
         overlay.id = PROMPT_OVERLAY_ID;
         overlay.className = 'npc-state-v3-prompt-overlay';
-        overlay.innerHTML = promptOverlayHtml(npc, library);
+        overlay.innerHTML = promptOverlayHtml(npc, library, { generate });
+        const shell = overlay.querySelector('.npc-state-v3-prompt-shell');
+        const chatKey = getChatKey();
+        if (shell) {
+            shell.dataset.chatKey = chatKey;
+            promptFocusBeforeOpen = globalThis.document.activeElement instanceof globalThis.HTMLElement ? globalThis.document.activeElement : null;
+        }
+        const generationKey = generate && chatKey && chatKey !== 'no-chat' && !/-pending:/.test(chatKey) && npc.id ? pendingKey(chatKey, npc.id) : null;
+        if (generate && chatKey && chatKey !== 'no-chat' && !/-pending:/.test(chatKey) && npc.id) {
+            generationSessionFor(chatKey, npc.id);
+        }
         overlay.addEventListener('click', event => {
             if (event.target === overlay || event.target.closest?.('.npc-state-v3-prompt-close')) closePrompt();
         });
-        const shell = overlay.querySelector('.npc-state-v3-prompt-shell');
         shell?.addEventListener('keydown', event => { if (event.key === 'Escape') closePrompt(); });
-        overlay.querySelector('#npc_state_v3_prompt_preset')?.addEventListener('change', () => renderPromptOverlay(overlay));
+        overlay.querySelector('#npc_state_v3_prompt_preset')?.addEventListener('change', event => {
+            const select = event.currentTarget;
+            const previousPresetId = select.dataset.previousPresetId || library.portraitActivePresetId;
+            if (generate && generationPromptEdited(overlay)) {
+                const discard = globalThis.confirm?.('Changing the preset recomposes both prompts and discards your edits. Continue?');
+                if (!discard) {
+                    select.value = previousPresetId;
+                    return;
+                }
+            }
+            if (generate) {
+                const session = sessionForShell(overlay);
+                if (session) {
+                    session.presetId = select.value;
+                    composeGenerationPrompt(overlay, session);
+                } else {
+                    composePromptOverlay(overlay);
+                }
+            } else {
+                composePromptOverlay(overlay);
+            }
+            renderPromptOverlay(overlay);
+            select.dataset.previousPresetId = select.value;
+        });
         overlay.querySelector('.npc-state-v3-prompt-copy-positive')?.addEventListener('click', () => copyPromptOverlay('positive', overlay).catch(error => notify('error', error.message)));
         overlay.querySelector('.npc-state-v3-prompt-copy-negative')?.addEventListener('click', () => copyPromptOverlay('negative', overlay).catch(error => notify('error', error.message)));
         overlay.querySelector('.npc-state-v3-prompt-copy-both')?.addEventListener('click', () => copyPromptOverlay('both', overlay).catch(error => notify('error', error.message)));
+        if (generate) {
+            for (const selector of ['#npc_state_v3_prompt_positive', '#npc_state_v3_prompt_negative']) {
+                overlay.querySelector(selector)?.addEventListener('input', () => {
+                    const session = sessionForShell(overlay);
+                    if (session) {
+                        session.positive = readPromptValue('positive', overlay);
+                        session.negative = readPromptValue('negative', overlay);
+                    }
+                    renderPromptOverlay(overlay);
+                });
+            }
+            overlay.querySelector('.npc-state-v3-prompt-generate')?.addEventListener('click', () => {
+                startGeneration(npc.id, overlay).catch(() => notify('error', 'portrait generation could not start. The current portrait was preserved.'));
+            });
+            overlay.querySelector('.npc-state-v3-prompt-apply')?.addEventListener('click', () => {
+                applyCandidate(npc.id, overlay).catch(() => notify('error', 'the portrait could not be applied. The current portrait was preserved.'));
+            });
+        }
         globalThis.document.body.appendChild(overlay);
         globalThis.document.documentElement?.classList.add('npc-state-v3-prompt-open');
         globalThis.document.body.classList.add('npc-state-v3-prompt-open');
         renderPromptOverlay(overlay);
+        if (generationKey) syncOpenGenerationDialog(generationKey);
+        if (generate && !pendingFor(getChatKey(), npc.id)) {
+            const select = overlay.querySelector('#npc_state_v3_prompt_preset');
+            if (select) select.dataset.previousPresetId = select.value;
+        }
         try { shell?.focus({ preventScroll: true }); } catch { shell?.focus?.(); }
         return true;
     }
@@ -522,6 +1203,13 @@ export function createPortraitPromptUi(adapters = {}) {
         if (dossierBridgeBound || !globalThis.document?.addEventListener) return false;
         dossierBridgeBound = true;
         globalThis.document.addEventListener('click', event => {
+            const generateButton = event.target?.closest?.('.npc-state-v3-generate-portrait');
+            if (generateButton) {
+                event.preventDefault();
+                generateButton.closest?.('details')?.removeAttribute?.('open');
+                openFor(generateButton.dataset.npcId || '', { generate: true });
+                return;
+            }
             const button = event.target?.closest?.('.npc-state-v3-generate-image-prompt');
             if (!button) return;
             event.preventDefault();
@@ -564,15 +1252,27 @@ export function createPortraitPromptUi(adapters = {}) {
         }
         syncNpcChoices(root);
         renderPreview(root);
-        if (promptOverlay()) {
-            const select = promptOverlay().querySelector('#npc_state_v3_prompt_preset');
+        disposeMissingNpcSessions();
+        const overlay = promptOverlay();
+        if (overlay) {
+            const select = overlay.querySelector('#npc_state_v3_prompt_preset');
             const previous = select?.value || '';
             const library = normalizePortraitPresetLibrary(getSettings());
             if (select) {
                 select.innerHTML = promptOptionsHtml(library, previous);
                 select.value = library.portraitPresets.some(preset => preset.id === previous) ? previous : library.portraitActivePresetId;
             }
-            renderPromptOverlay(promptOverlay());
+            const shell = overlay.querySelector('.npc-state-v3-prompt-shell');
+            const key = sessionKeyForShell(overlay);
+            if (key && shell?.dataset?.generate === 'true') {
+                const session = generationSessions.get(key);
+                if (session && !pendingGenerations.has(key) && !library.portraitPresets.some(preset => preset.id === session.presetId)) {
+                    session.presetId = library.portraitActivePresetId;
+                }
+                syncOpenGenerationDialog(key);
+            } else if (shell?.dataset?.generate !== 'true') {
+                renderPromptOverlay(overlay);
+            }
         }
         return true;
     }
@@ -638,6 +1338,7 @@ export function createPortraitPromptUi(adapters = {}) {
     return Object.freeze({
         scheduleMount,
         refresh,
+        invalidateGenerationContext,
         openFor,
         closePrompt,
         buildFor,

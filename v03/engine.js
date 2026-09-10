@@ -303,14 +303,17 @@ export function createNpcStateEngine(adapters = {}) {
         });
     }
 
-    async function mutate(label, mutator, { checkpointReason = 'manual' } = {}) {
+    async function mutate(label, mutator, { checkpointReason = 'manual', expectedChatKey } = {}) {
         const chatKey = getChatKey();
         if (!chatKey || chatKey === 'no-chat' || /-pending:/.test(chatKey)) return { ok: false, reason: 'no-chat' };
+        if (expectedChatKey !== undefined && expectedChatKey !== chatKey) return { ok: false, reason: 'stale-chat' };
         return exclusive(chatKey, async () => {
             const state = normalizeState(await loadChat(chatKey), chatKey);
+            if (expectedChatKey !== undefined && getChatKey() !== expectedChatKey) return { ok: false, reason: 'stale-chat' };
             const result = await mutator(state);
             if (result === false) return { ok: false, reason: 'rejected' };
             if (result?.rejected) return { ok: false, reason: String(result.rejected) };
+            if (expectedChatKey !== undefined && getChatKey() !== expectedChatKey) return { ok: false, reason: 'stale-chat' };
             const chat = getContext().chat || [];
             const messageId = latestAssistantMessageId(chat);
             let next = normalizeState(state, chatKey);
@@ -374,7 +377,7 @@ export function createNpcStateEngine(adapters = {}) {
             if (next.name !== current.name && current.name) next.aliases = [...new Set([...(next.aliases || []), current.name])].slice(0, 10);
             state.npcs[index] = normalizeNpc(next);
             return { npcId: current.id };
-        }, { checkpointReason: 'manual-edit' });
+        }, { checkpointReason: 'manual-edit', expectedChatKey: options.expectedChatKey });
     }
 
     async function archiveNpc(reference, archived = true, reason = 'manual') {

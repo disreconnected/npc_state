@@ -28,8 +28,8 @@ function createFakeFetch() {
     return { files, writes, fetchFn };
 }
 
-function harness({ settings = {}, generator, legacyPointer = null, legacyText = '' } = {}) {
-    const chatKey = 'chat:owner:test';
+function harness({ settings = {}, generator, legacyPointer = null, legacyText = '', chatKey: configuredChatKey } = {}) {
+    const chatKey = configuredChatKey || 'chat:owner:test';
     const ctx = { chat: baseChat() };
     const config = {
         enabled: true, autoScan: true, scanDepth: 8, branchRescan: true,
@@ -40,9 +40,10 @@ function harness({ settings = {}, generator, legacyPointer = null, legacyText = 
     if (legacyPointer?.path && legacyText) storage.files.set(legacyPointer.path, legacyText);
     let pointer = null;
     let generateCalls = 0;
+    let activeChatKey = chatKey;
     const engine = createNpcStateEngine({
         getContext: () => ctx,
-        getChatKey: () => chatKey,
+        getChatKey: () => activeChatKey,
         getSettings: () => config,
         getPointer: () => pointer,
         setPointer: (_key, value) => { pointer = structuredClone(value); },
@@ -53,7 +54,7 @@ function harness({ settings = {}, generator, legacyPointer = null, legacyText = 
         generate: async args => { generateCalls += 1; return generator(args); },
         notify: () => {}, onStateChanged: () => {},
     });
-    return { engine, ctx, config, storage, chatKey, pointer: () => pointer, generateCalls: () => generateCalls };
+    return { engine, ctx, config, storage, chatKey, pointer: () => pointer, generateCalls: () => generateCalls, setChatKey: key => { activeChatKey = key; } };
 }
 
 test('automatic current-cast scan uses one batch generation for multiple NPCs', async () => {
@@ -204,4 +205,68 @@ test('a local v0.3 pointer hint recovers a sidecar when debounced extension sett
         if (previousStorage === undefined) delete globalThis.localStorage;
         else globalThis.localStorage = previousStorage;
     }
+});
+
+test('portrait update queued behind a scan rejects with stale-chat when the chat changes while queued', async () => {
+    const h = harness({ generator: async () => '{}' });
+    const added = await h.engine.addNpc('Astra');
+    const id = added.result.npcId;
+    const writesBefore = h.storage.writes.length;
+    let releaseScan;
+    const gate = new Promise(resolve => { releaseScan = resolve; });
+    const blocking = h.engine.scan(1, { manual: true, force: true }).finally(() => {});
+    const queued = h.engine.updateNpc(id, { portrait: { url: '/user/images/npc-state/npc-test.png', mime: 'image/png', updatedAt: 1 } }, { expectedChatKey: h.chatKey });
+    h.setChatKey('chat:owner:other');
+    releaseScan();
+    const scanResult = await blocking;
+    const updateResult = await queued;
+    await gate;
+    assert.equal(updateResult.ok, false);
+    assert.equal(updateResult.reason, 'stale-chat');
+    assert.ok(h.storage.writes.length <= writesBefore + 1, 'rejected update must not add writes beyond the scan');
+    assert.equal(h.engine.getState('chat:owner:other')?.npcs?.some(npc => npc.id === id) || false, false, 'no dossier loaded under the foreign chat');
+});
+
+test('chat switch scheduled inside a mutator microtask rejects the awaited mutation before persistence', async () => {
+    const h = harness({ generator: async () => '{}' });
+    const added = await h.engine.addNpc('Astra');
+    const id = added.result.npcId;
+    const writesBefore = h.storage.writes.length;
+    const result = await h.engine.updateNpc(id, {
+        get portrait() {
+            queueMicrotask(() => h.setChatKey('chat:owner:switched'));
+            return null;
+        },
+    }, { expectedChatKey: h.chatKey });
+    h.setChatKey(h.chatKey);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'stale-chat');
+    assert.equal(h.storage.writes.length, writesBefore, 'post-mutator chat switch must prevent persistence');
+});
+
+test('URL-backed portrait update persists to the sidecar and survives a reload', async () => {
+    const h = harness({ generator: async () => '{}' });
+    const added = await h.engine.addNpc('Astra');
+    const id = added.result.npcId;
+    const portrait = { url: '/user/images/npc-state/npc-abc.png', mime: 'image/png', sourceName: 'npc-abc.png', width: 2160, height: 3840, updatedAt: Date.now() };
+    const update = await h.engine.updateNpc(id, { portrait }, { expectedChatKey: h.chatKey });
+    assert.equal(update.ok, true);
+    assert.equal(h.engine.getState(h.chatKey).npcs.find(npc => npc.id === id).portrait.url, portrait.url);
+    const raw = JSON.parse(h.storage.files.get(h.pointer().path));
+    assert.equal(raw.state.npcs.find(npc => npc.id === id)?.portrait?.url, portrait.url);
+    const reloaded = createNpcStateEngine({
+        getContext: () => h.ctx,
+        getChatKey: () => h.chatKey,
+        getSettings: () => h.config,
+        getPointer: () => h.pointer(),
+        setPointer: () => {},
+        getLegacyPointer: () => null,
+        persistSettings: () => {},
+        getHeaders: () => ({}),
+        fetchFn: h.storage.fetchFn,
+        generate: async () => '{}',
+        notify: () => {}, onStateChanged: () => {},
+    });
+    const stateAfter = await reloaded.loadChat(h.chatKey);
+    assert.equal(stateAfter.npcs.find(npc => npc.id === id)?.portrait?.url, portrait.url);
 });
